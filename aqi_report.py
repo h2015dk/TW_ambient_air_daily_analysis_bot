@@ -112,9 +112,51 @@ def top_site(z, item, unit):
             f"  日均 {r['mean']:.1f} {unit}｜小時最高 {r['peak']:.1f}")
 
 
+def wrap_items(prefix, items, width=78):
+    """用『、』串接項目並手動換行（中文沒有空白，textwrap 會從字中間硬切）"""
+    lines, cur = [], prefix
+    for i, it in enumerate(items):
+        piece = it + ("、" if i < len(items) - 1 else "")
+        if len(cur) + len(piece) > width and cur.strip():
+            lines.append(cur)
+            cur = "　　" + piece               # 換行後縮排兩個全形空白
+        else:
+            cur += piece
+    lines.append(cur)
+    return lines
+
+
+def station_footer(z, wd_name):
+    """列出有統計的測站（該測項至少有一筆有效值），依縣市分組；並標出缺哪些測項"""
+    def names(item):
+        d = z[(z["itemengname"] == item) & z["v"].notna()]
+        return set(d["sitename"])
+    sets = {"PM2.5": names("PM2.5"), "NOx": names("NOx"),
+            "SO2": names("SO2"), "風向": names(wd_name)}
+    used = set().union(*sets.values())
+    meta = z[z["sitename"].isin(used)][["sitename", "county"]].drop_duplicates()
+    lines = [f"統計測站（共 {len(used)} 站｜" +
+             "｜".join(f"{k} {len(v)} 站" for k, v in sets.items()) + "）"]
+    for county, g in meta.groupby("county"):
+        lines += wrap_items(f"{county}：", sorted(g["sitename"]))
+    for k, v in sets.items():
+        miss = sorted(used - v)
+        if miss:
+            lines += wrap_items(f"無{k}資料：", miss)
+    return lines
+
+
 def make_chart(long, zone, path):
     z = long[long["areaname"] == zone]
-    fig = plt.figure(figsize=(10, 9))
+
+    # 風向測項：優先用小時平均 WD_HR / WS_HR，沒有就用 WIND_DIREC / WIND_SPEED
+    wd_name = "WD_HR" if z[z["itemengname"] == "WD_HR"]["v"].notna().any() else "WIND_DIREC"
+    ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
+
+    foot = station_footer(z, wd_name)
+    foot_h = 0.15 * len(foot)                   # 每行約 0.15 吋
+    H = 9 + foot_h
+    fig = plt.figure(figsize=(10, H))
     gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
 
     # 左：PM2.5 / NOx / SO2 逐時（區域平均線 + 測站最小～最大範圍）
@@ -134,9 +176,7 @@ def make_chart(long, zone, path):
         ax.set_title(f"日平均 {m:.1f}" if pd.notna(m) else "無資料", loc="right", fontsize=10)
     ax.set_xlabel("時")
 
-    # 右上：風向玫瑰圖（優先用小時平均風向 WD_HR，沒有就用 WIND_DIREC）
-    wd_name = "WD_HR" if z[z["itemengname"] == "WD_HR"]["v"].notna().any() else "WIND_DIREC"
-    ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
+    # 右上：風向玫瑰圖
     w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
         index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
     ).rename(columns={wd_name: "WIND_DIREC", ws_name: "WIND_SPEED"})
@@ -151,9 +191,9 @@ def make_chart(long, zone, path):
         counts, _ = np.histogram((deg + 11.25) % 360, bins=16, range=(0, 360))
         axp.bar(np.deg2rad(np.arange(16) * 22.5), counts, width=np.deg2rad(22.5),
                 color="tab:gray", edgecolor="white")
-        axp.set_rlabel_position(202.5)              # 把次數刻度移到沒有長條的角度
+        axp.set_rlabel_position(202.5)
         axp.tick_params(axis="y", labelsize=8)
-        rad = np.deg2rad(deg)                       # 風向不能直接算術平均，用風速加權的向量平均
+        rad = np.deg2rad(deg)
         wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
         axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
                       f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
@@ -172,7 +212,8 @@ def make_chart(long, zone, path):
     axt.text(0, .5, txt, fontsize=10, va="center")
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
+    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.35)
     fig.savefig(path, dpi=100)
     plt.close(fig)
 
