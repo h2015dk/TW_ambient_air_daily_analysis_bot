@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """用法: python aqi_report.py build   # 產圖
         python aqi_report.py send    # 推送到 LINE"""
-import os, sys, time, shutil, subprocess, requests
+import io, os, sys, time, shutil, subprocess, requests
 import numpy as np, pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from PIL import Image
 
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK TC", "Noto Sans CJK JP", "Microsoft JhengHei"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -24,6 +25,8 @@ HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}             # 額外指定疊圖比
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
+ORIG_DPI = 200                                      # 原圖解析度（點開圖片看到的）；200 dpi ≈ 2000×2150 px
+PREVIEW_DPI = 100                                   # 聊天室預覽圖解析度（LINE 限制預覽圖 ≤ 1 MB）
 UNITS = {"PM2.5": "μg/m³", "NOx": "ppb", "SO2": "ppb"}
 MARK_COLOR = {"PM2.5": "red", "NOx": "blue", "SO2": "green"}   # 風向圖上最高測站標記的顏色
 
@@ -203,6 +206,14 @@ def station_footer(z, wd_name):
     return lines
 
 
+def save_png(fig, path, dpi):
+    """存成 PNG 並壓成 256 色調色盤（圖表只有幾種顏色，肉眼看不出差異，檔案小約 3 倍）"""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    buf.seek(0)
+    Image.open(buf).convert("RGB").quantize(colors=256, dither=0).save(path, optimize=True)
+
+
 def make_chart(long, zone, path):
     z = long[long["areaname"] == zone]
 
@@ -338,7 +349,8 @@ def make_chart(long, zone, path):
                          alignment="left")
         for t in leg.get_texts():
             t.set_linespacing(1.2)
-    fig.savefig(path, dpi=100)
+    save_png(fig, path, ORIG_DPI)                                  # 原圖（高解析度）
+    save_png(fig, path.replace(".png", "_preview.png"), PREVIEW_DPI)   # 聊天室預覽圖
     plt.close(fig)
 
 
@@ -398,17 +410,20 @@ def send():
         msgs = []
         for zone in grp:
             fn = ZONE_FILE[zone]
-            path = f"{OUT}/{fn}.png"
-            if not os.path.exists(path):
-                print(f"略過 {zone}：找不到 {path}")
+            path, ppath = f"{OUT}/{fn}.png", f"{OUT}/{fn}_preview.png"
+            if not (os.path.exists(path) and os.path.exists(ppath)):
+                print(f"略過 {zone}：找不到 {path} 或預覽圖")
                 continue
-            size = os.path.getsize(path)
-            if size > 1_000_000:                    # LINE 預覽圖上限 1 MB
-                print(f"警告：{zone} 圖片 {size / 1e6:.2f} MB，超過 LINE 預覽圖 1 MB 上限")
-            url = f"{base}/{fn}.png"
+            size, psize = os.path.getsize(path), os.path.getsize(ppath)
+            if size > 10_000_000:                   # LINE 原圖上限 10 MB
+                print(f"警告：{zone} 原圖 {size / 1e6:.1f} MB，超過 LINE 10 MB 上限")
+            if psize > 1_000_000:                   # LINE 預覽圖上限 1 MB
+                print(f"警告：{zone} 預覽圖 {psize / 1e6:.2f} MB，超過 LINE 1 MB 上限")
+            url, purl = f"{base}/{fn}.png", f"{base}/{fn}_preview.png"
             wait_public(url, path)
-            print(f"  {zone}: {url}（{size / 1024:.0f} KB）")
-            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
+            wait_public(purl, ppath)
+            print(f"  {zone}: 原圖 {size / 1024:.0f} KB｜預覽 {psize / 1024:.0f} KB｜{url}")
+            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": purl})
         if not msgs:
             print("這組沒有圖片，不發送:", grp)
             continue
