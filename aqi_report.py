@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """用法: python aqi_report.py build   # 產圖
         python aqi_report.py send    # 推送到 LINE"""
-import os, sys, time, shutil, requests
+import os, sys, time, shutil, subprocess, requests
 import numpy as np, pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -211,7 +211,7 @@ def make_chart(long, zone, path):
     ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
 
     foot = station_footer(z, wd_name)
-    foot_h = 0.14 * len(foot) + 0.12            # 單行間距，每行約 0.14 吋，再加一點緩衝
+    foot_h = 0.15 * len(foot) + 0.12            # 單行間距(1.2)，每行約 0.15 吋，再加一點緩衝
     H = 10 + foot_h
     fig = plt.figure(figsize=(10, H), dpi=100)
     gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
@@ -292,7 +292,7 @@ def make_chart(long, zone, path):
         wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
         axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
                       f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
-                      fontsize=10, pad=18, linespacing=1.0)
+                      fontsize=10, pad=18, linespacing=1.2)
 
         # 各污染物「最高測站、最高值那一小時」的風向標記，並註明該小時風速
         for k, item in enumerate(["PM2.5", "NOx", "SO2"]):
@@ -319,11 +319,11 @@ def make_chart(long, zone, path):
         top_site(z, "NOx", "ppb"),
         top_site(z, "SO2", "ppb"),
     ])
-    axt.text(0, 0.0, txt, fontsize=9, va="bottom", ha="left", transform=axt.transAxes, linespacing=1.0)
+    axt.text(0, 0.0, txt, fontsize=9, va="bottom", ha="left", transform=axt.transAxes, linespacing=1.2)
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
     fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
-    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.0)
+    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.2)
 
     # 風向、風速說明：放在風向圖正下方，上緣距離風向圖最低的文字（180° 標籤）12 px
     if handles:
@@ -337,7 +337,7 @@ def make_chart(long, zone, path):
                          title="最高濃度測站於最高值小時的風向、風速", title_fontsize=8,
                          alignment="left")
         for t in leg.get_texts():
-            t.set_linespacing(1.0)
+            t.set_linespacing(1.2)
     fig.savefig(path, dpi=100)
     plt.close(fig)
 
@@ -361,18 +361,36 @@ def build():
             shutil.rmtree(f"docs/images/{d}")
 
 
-def wait_public(url, tries=6):
-    for _ in range(tries):
-        if requests.head(url, timeout=15).status_code == 200:
-            return
+def commit_sha():
+    """目前 HEAD 的 commit SHA。圖片網址綁定 SHA：每次 commit 都是全新的網址，
+    LINE 與 GitHub 的快取都不可能拿到舊版圖片。"""
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        return os.environ.get("GITHUB_REF_NAME", "main")
+
+
+def wait_public(url, local_path, tries=8):
+    """確認網址上的圖片內容與本機剛產出的檔案「完全相同」才放行（不只是回 200）"""
+    want = open(local_path, "rb").read()
+    for i in range(tries):
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200 and r.content == want:
+                return True
+            print(f"  等待圖片就緒（第 {i + 1} 次）：狀態 {r.status_code}，大小 {len(r.content)}／{len(want)} bytes")
+        except requests.RequestException as e:
+            print("  等待圖片就緒:", e)
         time.sleep(10)
-    print("警告：圖片網址尚未可存取", url)
+    print("警告：網址上的圖片與本機檔案不一致，仍嘗試發送：", url)
+    return False
 
 
 def send():
-    base = (f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/"
-            f"{os.environ.get('GITHUB_REF_NAME', 'main')}/docs/images/{DAY}")
-    print("要發送的日期:", DAY, "| 資料夾存在:", os.path.isdir(OUT),
+    sha = commit_sha()
+    base = (os.environ.get("IMAGE_BASE_URL")
+            or f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/{sha}/docs/images/{DAY}")
+    print("要發送的日期:", DAY, "| commit:", sha[:10], "| 資料夾存在:", os.path.isdir(OUT),
           "| 檔案:", os.listdir(OUT) if os.path.isdir(OUT) else [])
     gid = os.environ.get("LINE_GROUP_ID", "").strip()
     print("群組 ID 開頭:", gid[:1] or "（空）", "| 長度:", len(gid))
@@ -380,11 +398,16 @@ def send():
         msgs = []
         for zone in grp:
             fn = ZONE_FILE[zone]
-            if not os.path.exists(f"{OUT}/{fn}.png"):
-                print(f"略過 {zone}：找不到 {OUT}/{fn}.png")
+            path = f"{OUT}/{fn}.png"
+            if not os.path.exists(path):
+                print(f"略過 {zone}：找不到 {path}")
                 continue
-            url = f"{base}/{fn}.png?v={int(time.time())}"
-            wait_public(url)
+            size = os.path.getsize(path)
+            if size > 1_000_000:                    # LINE 預覽圖上限 1 MB
+                print(f"警告：{zone} 圖片 {size / 1e6:.2f} MB，超過 LINE 預覽圖 1 MB 上限")
+            url = f"{base}/{fn}.png"
+            wait_public(url, path)
+            print(f"  {zone}: {url}（{size / 1024:.0f} KB）")
             msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
         if not msgs:
             print("這組沒有圖片，不發送:", grp)
