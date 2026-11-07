@@ -19,7 +19,7 @@ DAY = (NOW - timedelta(days=1)).strftime("%Y-%m-%d")
 PREV = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
 OUT = f"docs/images/{DAY}"
 
-ITEMS = ["PM2.5", "NOx", "SO2", "WIND_DIREC", "WIND_SPEED"]
+ITEMS = ["PM2.5", "NOx", "SO2", "WIND_DIREC", "WIND_SPEED", "WD_HR", "WS_HR"]
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
@@ -73,6 +73,7 @@ def fetch(dataset, filters=None):
 def load_data():
     st = fetch("aqx_p_07")
     st["siteid"] = st["siteid"].astype(str).str.strip()
+    st["areaname"] = st["areaname"].astype(str).str.replace("空品區", "", regex=False).str.strip()
     print("空品區清單:", sorted(st["areaname"].dropna().unique()))
 
     df = fetch("aqx_p_13", f"monitordate,GR,{PREV} 23:59:59|monitordate,LE,{DAY} 23:59:59")
@@ -121,8 +122,11 @@ def make_chart(long, zone, path):
     ax.set_xlabel("時")
 
     # 右上：風向玫瑰圖 + 合成風向
-    w = z[z["itemengname"].isin(["WIND_DIREC", "WIND_SPEED"])].pivot_table(
-        index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean")
+    wd_name = "WD_HR" if z[z["itemengname"] == "WD_HR"]["v"].notna().any() else "WIND_DIREC"
+    ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
+    w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
+        index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
+    ).rename(columns={wd_name: "WIND_DIREC", ws_name: "WIND_SPEED"})
     axp = fig.add_subplot(gs[0:2, 1], projection="polar")
     axp.set_theta_zero_location("N")
     axp.set_theta_direction(-1)
