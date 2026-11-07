@@ -20,10 +20,12 @@ PREV = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
 OUT = f"docs/images/{DAY}"
 
 ITEMS = ["PM2.5", "NOx", "SO2", "WIND_DIREC", "WIND_SPEED", "WD_HR", "WS_HR"]
-HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}
+HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}             # 額外指定疊圖比較的測站：{空品區: {測項: 測站}}
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
+UNITS = {"PM2.5": "μg/m³", "NOx": "ppb", "SO2": "ppb"}
+MARK_COLOR = {"PM2.5": "red", "NOx": "blue", "SO2": "green"}   # 風向圖上最高測站標記的顏色
 
 COMPASS = ["北", "北北東", "東北", "東北東", "東", "東南東", "東南", "南南東",
            "南", "南南西", "西南", "西南西", "西", "西北西", "西北", "北北西"]
@@ -75,6 +77,8 @@ def load_data():
     st = fetch("aqx_p_07")
     st["siteid"] = st["siteid"].astype(str).str.strip()
     st["areaname"] = st["areaname"].astype(str).str.replace("空品區", "", regex=False).str.strip()
+    st["lon"] = pd.to_numeric(st["twd97lon"], errors="coerce")     # 經緯度（度），用來找最近的風向測站
+    st["lat"] = pd.to_numeric(st["twd97lat"], errors="coerce")
     print("空品區清單:", sorted(st["areaname"].dropna().unique()))
 
     df = fetch("aqx_p_13", f"monitordate,GR,{PREV} 23:59:59|monitordate,LE,{DAY} 23:59:59")
@@ -92,7 +96,7 @@ def load_data():
     long["hour"] = long["h"].str[-2:].astype(int)
     long["v"] = pd.to_numeric(long["v"], errors="coerce")   # NR、# 等註記碼 → NaN
     long["siteid"] = long["siteid"].astype(str).str.strip()
-    merged = long.merge(st[["siteid", "areaname", "county"]], on="siteid", how="left")
+    merged = long.merge(st[["siteid", "areaname", "county", "lon", "lat"]], on="siteid", how="left")
     miss = merged["areaname"].isna().mean()
     print(f"測站對應失敗比例: {miss:.0%}")
     print("aqx_p_13 的 siteid 範例:", sorted(long["siteid"].unique())[:5])
@@ -111,6 +115,58 @@ def top_site(z, item, unit):
     r = s.loc[idx]
     return (f"{item} 最高：{idx[0]}（{idx[1]}）\n"
             f"  日均 {r['mean']:.1f} {unit}｜小時最高 {r['peak']:.1f}")
+
+
+def find_top(z, item, min_hours=18):
+    """回傳某測項日均最高的測站名稱（有效時數不足 min_hours 的不比較），沒有則回傳 None"""
+    s = z[z["itemengname"] == item].groupby("sitename")["v"].agg(mean="mean", n="count")
+    s = s[s["n"] >= min_hours]
+    return None if s.empty else s["mean"].idxmax()
+
+
+def km(lat1, lon1, lat2, lon2):
+    """兩點距離（公里，haversine）"""
+    r = np.pi / 180
+    a = (np.sin((lat2 - lat1) * r / 2) ** 2
+         + np.cos(lat1 * r) * np.cos(lat2 * r) * np.sin((lon2 - lon1) * r / 2) ** 2)
+    return 12742 * np.arcsin(np.sqrt(a))
+
+
+def wind_at(z, wd_name, ws_name, site, hour):
+    """回傳 (風向角度, 風速, 來源說明)；找不到風向回傳 None。
+    1. 該測站該小時有風向 → 用本站
+    2. 沒有 → 用同空品區該小時「距離最近」且有風向的測站
+    3. 沒有座標可算距離 → 用全區風速加權合成風向"""
+    zw = z[z["itemengname"].isin([wd_name, ws_name]) & (z["hour"] == hour)]
+    p = zw.pivot_table(index="sitename", columns="itemengname", values="v", aggfunc="mean")
+    if wd_name not in p:
+        return None
+    p = p.dropna(subset=[wd_name])
+    if p.empty:
+        return None
+
+    def spd_of(name):
+        if ws_name in p and pd.notna(p.loc[name, ws_name]):
+            return float(p.loc[name, ws_name])
+        return None
+
+    if site in p.index:
+        return float(p.loc[site, wd_name]) % 360, spd_of(site), "本站"
+
+    pos = z.drop_duplicates("sitename").set_index("sitename")[["lat", "lon"]]
+    if site in pos.index and pos.loc[site].notna().all():
+        cand = [n for n in p.index if n in pos.index and pos.loc[n].notna().all()]
+        if cand:
+            dist = {n: km(pos.loc[site, "lat"], pos.loc[site, "lon"],
+                          pos.loc[n, "lat"], pos.loc[n, "lon"]) for n in cand}
+            near = min(dist, key=dist.get)
+            return (float(p.loc[near, wd_name]) % 360, spd_of(near),
+                    f"{near}站，距{dist[near]:.1f} km")
+
+    spd = p[ws_name].fillna(1).values if ws_name in p else np.ones(len(p))
+    rad = np.deg2rad(p[wd_name].values)
+    wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).sum(), (spd * np.cos(rad)).sum())) + 360) % 360
+    return float(wd), (float(p[ws_name].mean()) if ws_name in p else None), "全區合成"
 
 
 def wrap_items(prefix, items, width=78):
@@ -147,31 +203,6 @@ def station_footer(z, wd_name):
     return lines
 
 
-def find_top(z, item, min_hours=18):
-    """回傳某測項日均最高的測站名稱（有效時數不足 min_hours 的不比較），沒有則回傳 None"""
-    s = z[z["itemengname"] == item].groupby("sitename")["v"].agg(mean="mean", n="count")
-    s = s[s["n"] >= min_hours]
-    return None if s.empty else s["mean"].idxmax()
-
-
-def wind_at(z, wd_name, ws_name, site, hour):
-    """回傳 (風向角度, 來源)。優先用該測站該小時的風向；
-    該站沒有風向資料時，改用同空品區該小時所有測站的風速加權向量平均。"""
-    zw = z[z["itemengname"].isin([wd_name, ws_name]) & (z["hour"] == hour)]
-    p = zw.pivot_table(index="sitename", columns="itemengname", values="v", aggfunc="mean")
-    if wd_name not in p:
-        return None, ""
-    p = p.dropna(subset=[wd_name])
-    if p.empty:
-        return None, ""
-    if site in p.index:
-        return float(p.loc[site, wd_name]) % 360, "本站"
-    spd = p[ws_name].fillna(1).values if ws_name in p else np.ones(len(p))
-    rad = np.deg2rad(p[wd_name].values)
-    wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).sum(), (spd * np.cos(rad)).sum())) + 360) % 360
-    return float(wd), "全區"
-
-
 def make_chart(long, zone, path):
     z = long[long["areaname"] == zone]
 
@@ -180,8 +211,8 @@ def make_chart(long, zone, path):
     ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
 
     foot = station_footer(z, wd_name)
-    foot_h = 0.15 * len(foot)                   # 每行約 0.15 吋
-    H = 9 + foot_h
+    foot_h = 0.16 * len(foot) + 0.12            # 每行約 0.16 吋，再加一點緩衝
+    H = 10 + foot_h
     fig = plt.figure(figsize=(10, H))
     gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
 
@@ -231,6 +262,10 @@ def make_chart(long, zone, path):
         ax.set_title(f"全區日均 {m:.1f}" if pd.notna(m) else "無資料", loc="right", fontsize=10)
     ax.set_xlabel("時")
 
+    # 右下：說明區（上：風向標記圖例；下：日均最高測站文字）
+    axt = fig.add_subplot(gs[2, 1])
+    axt.axis("off")
+
     # 右上：風向玫瑰圖
     w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
         index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
@@ -248,49 +283,56 @@ def make_chart(long, zone, path):
                 color="tab:gray", edgecolor="white")
         rmax = max(counts.max(), 1)
         axp.set_ylim(0, rmax * 1.25)                    # 外圈留空間給標記
-        axp.set_rlabel_position(202.5)
+        axp.set_rlabel_position(float(np.argmin(counts) * 22.5))   # 次數刻度放在長條最短（最空）的方向
         axp.tick_params(axis="y", labelsize=8)
+        for lb in axp.get_yticklabels():                # 刻度數字加白底，被長條蓋到也看得清楚
+            lb.set_bbox(dict(facecolor="white", alpha=.75, edgecolor="none", pad=0.6))
         rad = np.deg2rad(deg)
         wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
         axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
                       f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
-                      fontsize=10)
+                      fontsize=10, pad=18)
 
-        # 各污染物「最高測站、最高值那一小時」的風向標記（紅 PM2.5／藍 NOx／綠 SO2）
-        colors = {"PM2.5": "red", "NOx": "blue", "SO2": "green"}
+        # 各污染物「最高測站、最高值那一小時」的風向標記，並註明該小時風速
+        handles = []
         for k, item in enumerate(["PM2.5", "NOx", "SO2"]):
             if item not in peaks:
                 continue
             site, hr, val = peaks[item]
-            d_deg, src = wind_at(z, wd_name, ws_name, site, hr)
-            if d_deg is None:
+            res = wind_at(z, wd_name, ws_name, site, hr)
+            if res is None:
                 continue
+            d_deg, d_spd, src = res
             r = rmax * (1.18 - 0.08 * k)                # 三條線長度錯開，避免重疊
             th = np.deg2rad(d_deg)
-            axp.plot([th, th], [0, r], color=colors[item], lw=2, zorder=5)
-            axp.plot(th, r, marker="o", ms=8, color=colors[item], zorder=6,
-                     label=f"{item} 最高：{site} {hr}時 {compass(d_deg)}（{d_deg:.0f}°，{src}）")
-        if axp.get_legend_handles_labels()[0]:
-            axp.legend(loc="upper center", bbox_to_anchor=(0.5, -0.04), fontsize=7.5,
-                       frameon=False, title="最高測站於最高值小時的風向", title_fontsize=8)
+            axp.plot([th, th], [0, r], color=MARK_COLOR[item], lw=2, zorder=5)
+            spd_txt = f"{d_spd:.1f} m/s" if d_spd is not None else "無風速資料"
+            mk, = axp.plot(th, r, marker="o", ms=8, color=MARK_COLOR[item], zorder=6, ls="",
+                           label=(f"{item} {val:.1f} {UNITS[item]}｜{site} {hr}時\n"
+                                  f"{compass(d_deg)} {d_deg:.0f}°｜風速 {spd_txt}｜{src}"))
+            handles.append(mk)
+        if handles:
+            axt.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, 1.0), fontsize=7.5,
+                       frameon=False, borderaxespad=0, labelspacing=0.7,
+                       title="最高濃度測站於最高值小時的風向、風速", title_fontsize=8,
+                       alignment="left")
     else:
-        axp.set_title("風向無資料")
+        axp.set_title("風向無資料", pad=18)
 
-    # 右下：PM2.5 / NOx / SO2 日均最高測站
-    axt = fig.add_subplot(gs[2, 1])
-    axt.axis("off")
-    txt = "前一日日均最高測站\n\n" + "\n\n".join([
+    txt = "前一日日均最高測站\n" + "\n".join([
         top_site(z, "PM2.5", "μg/m³"),
         top_site(z, "NOx", "ppb"),
         top_site(z, "SO2", "ppb"),
     ])
-    axt.text(0, .38, txt, fontsize=10, va="center")     # 稍微下移，讓出圖例空間
+    axt.text(0, 0.0, txt, fontsize=9, va="bottom", ha="left", transform=axt.transAxes)
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
     fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
     fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.35)
     fig.savefig(path, dpi=100)
     plt.close(fig)
+
+
 def build():
     long = load_data()
     os.makedirs(OUT, exist_ok=True)
