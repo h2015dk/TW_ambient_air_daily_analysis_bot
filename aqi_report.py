@@ -218,7 +218,7 @@ def send():
             if not os.path.exists(f"{OUT}/{fn}.png"):
                 print(f"略過 {zone}：找不到 {OUT}/{fn}.png")
                 continue
-            url = f"{base}/{fn}.png"
+            url = f"{base}/{fn}.png?v={int(time.time())}"
             wait_public(url)
             msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
         if not msgs:
