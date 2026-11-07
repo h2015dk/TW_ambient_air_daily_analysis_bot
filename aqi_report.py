@@ -99,10 +99,23 @@ def load_data():
     return merged
 
 
+def top_site(z, item, unit):
+    """回傳某測項「日均最高測站」的文字（有效時數 < 18 的測站不比較）"""
+    s = z[z["itemengname"] == item].groupby(["sitename", "county"])["v"].agg(
+        mean="mean", n="count", peak="max")
+    s = s[s["n"] >= 18]
+    if s.empty:
+        return f"{item} 最高：有效資料不足"
+    idx = s["mean"].idxmax()
+    r = s.loc[idx]
+    return (f"{item} 最高：{idx[0]}（{idx[1]}）\n"
+            f"  日均 {r['mean']:.1f} {unit}｜小時最高 {r['peak']:.1f}")
+
+
 def make_chart(long, zone, path):
     z = long[long["areaname"] == zone]
     fig = plt.figure(figsize=(10, 9))
-    gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.1])
+    gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
 
     # 左：PM2.5 / NOx / SO2 逐時（區域平均線 + 測站最小～最大範圍）
     for i, (item, label, c) in enumerate([("PM2.5", "PM2.5 (μg/m³)", "tab:red"),
@@ -121,12 +134,13 @@ def make_chart(long, zone, path):
         ax.set_title(f"日平均 {m:.1f}" if pd.notna(m) else "無資料", loc="right", fontsize=10)
     ax.set_xlabel("時")
 
-    # 右上：風向玫瑰圖 + 合成風向
+    # 右上：風向玫瑰圖（優先用小時平均風向 WD_HR，沒有就用 WIND_DIREC）
     wd_name = "WD_HR" if z[z["itemengname"] == "WD_HR"]["v"].notna().any() else "WIND_DIREC"
     ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
     w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
         index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
     ).rename(columns={wd_name: "WIND_DIREC", ws_name: "WIND_SPEED"})
+
     axp = fig.add_subplot(gs[0:2, 1], projection="polar")
     axp.set_theta_zero_location("N")
     axp.set_theta_direction(-1)
@@ -137,27 +151,25 @@ def make_chart(long, zone, path):
         counts, _ = np.histogram((deg + 11.25) % 360, bins=16, range=(0, 360))
         axp.bar(np.deg2rad(np.arange(16) * 22.5), counts, width=np.deg2rad(22.5),
                 color="tab:gray", edgecolor="white")
-        rad = np.deg2rad(deg)                      # 風向不能直接算術平均，用風速加權的向量平均
+        axp.set_rlabel_position(202.5)              # 把次數刻度移到沒有長條的角度
+        axp.tick_params(axis="y", labelsize=8)
+        rad = np.deg2rad(deg)                       # 風向不能直接算術平均，用風速加權的向量平均
         wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
-        axp.set_title(f"風向分布\n合成風向：{compass(wd)}（{wd:.0f}°）\n平均風速 {spd.mean():.1f} m/s",
-                      fontsize=11)
+        axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
+                      f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
+                      fontsize=10)
     else:
         axp.set_title("風向無資料")
 
-    # 右下：PM2.5 日均最高測站（有效小時數 < 18 的測站不參與比較）
-    s = z[z["itemengname"] == "PM2.5"].groupby(["sitename", "county"])["v"].agg(
-        mean="mean", n="count", peak="max")
-    s = s[s["n"] >= 18]
+    # 右下：PM2.5 / NOx / SO2 日均最高測站
     axt = fig.add_subplot(gs[2, 1])
     axt.axis("off")
-    if s.empty:
-        txt = "PM2.5 有效資料不足"
-    else:
-        idx = s["mean"].idxmax()
-        r = s.loc[idx]
-        txt = (f"前一日 PM2.5 日均最高測站\n\n{idx[0]}（{idx[1]}）\n日均 {r['mean']:.1f} μg/m³\n"
-               f"小時最高 {r['peak']:.0f} μg/m³\n有效時數 {int(r['n'])}/24")
-    axt.text(0, .5, txt, fontsize=12, va="center")
+    txt = "前一日日均最高測站\n\n" + "\n\n".join([
+        top_site(z, "PM2.5", "μg/m³"),
+        top_site(z, "NOx", "ppb"),
+        top_site(z, "SO2", "ppb"),
+    ])
+    axt.text(0, .5, txt, fontsize=10, va="center")
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
     fig.tight_layout()
