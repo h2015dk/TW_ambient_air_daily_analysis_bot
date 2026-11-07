@@ -154,6 +154,24 @@ def find_top(z, item, min_hours=18):
     return None if s.empty else s["mean"].idxmax()
 
 
+def wind_at(z, wd_name, ws_name, site, hour):
+    """回傳 (風向角度, 來源)。優先用該測站該小時的風向；
+    該站沒有風向資料時，改用同空品區該小時所有測站的風速加權向量平均。"""
+    zw = z[z["itemengname"].isin([wd_name, ws_name]) & (z["hour"] == hour)]
+    p = zw.pivot_table(index="sitename", columns="itemengname", values="v", aggfunc="mean")
+    if wd_name not in p:
+        return None, ""
+    p = p.dropna(subset=[wd_name])
+    if p.empty:
+        return None, ""
+    if site in p.index:
+        return float(p.loc[site, wd_name]) % 360, "本站"
+    spd = p[ws_name].fillna(1).values if ws_name in p else np.ones(len(p))
+    rad = np.deg2rad(p[wd_name].values)
+    wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).sum(), (spd * np.cos(rad)).sum())) + 360) % 360
+    return float(wd), "全區"
+
+
 def make_chart(long, zone, path):
     z = long[long["areaname"] == zone]
 
@@ -166,6 +184,8 @@ def make_chart(long, zone, path):
     H = 9 + foot_h
     fig = plt.figure(figsize=(10, H))
     gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
+
+    peaks = {}                                  # {測項: (最高測站, 最高值的小時, 最高值)}
 
     # 左：PM2.5 / NOx / SO2 逐時（全區平均線 + 範圍帶 + 日均最高測站黑線）
     for i, (item, label, c) in enumerate([("PM2.5", "PM2.5 (μg/m³)", "tab:red"),
@@ -180,7 +200,6 @@ def make_chart(long, zone, path):
         ax.fill_between(g.index, g["min"], g["max"], color=c, alpha=.15, label="全區範圍")
         ax.plot(g.index, g["mean"], color=c, marker="o", ms=3, label="全區平均")
 
-
         def station_line(name):
             return d[d["sitename"] == name].groupby("hour")["v"].mean().reindex(range(24))
 
@@ -189,6 +208,7 @@ def make_chart(long, zone, path):
             h = station_line(top)
             ax.plot(h.index, h, color="black", marker="s", ms=3.5, lw=1.8,
                     label=f"最高：{top}（日均 {h.mean():.1f}）")
+            peaks[item] = (top, int(h.idxmax()), float(h.max()))
             has_line = True
         if extra and extra != top:                      # 若嘉義剛好就是最高站，不重複畫
             h2 = station_line(extra)
@@ -212,7 +232,6 @@ def make_chart(long, zone, path):
     ax.set_xlabel("時")
 
     # 右上：風向玫瑰圖
-
     w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
         index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
     ).rename(columns={wd_name: "WIND_DIREC", ws_name: "WIND_SPEED"})
@@ -227,6 +246,8 @@ def make_chart(long, zone, path):
         counts, _ = np.histogram((deg + 11.25) % 360, bins=16, range=(0, 360))
         axp.bar(np.deg2rad(np.arange(16) * 22.5), counts, width=np.deg2rad(22.5),
                 color="tab:gray", edgecolor="white")
+        rmax = max(counts.max(), 1)
+        axp.set_ylim(0, rmax * 1.25)                    # 外圈留空間給標記
         axp.set_rlabel_position(202.5)
         axp.tick_params(axis="y", labelsize=8)
         rad = np.deg2rad(deg)
@@ -234,6 +255,24 @@ def make_chart(long, zone, path):
         axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
                       f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
                       fontsize=10)
+
+        # 各污染物「最高測站、最高值那一小時」的風向標記（紅 PM2.5／藍 NOx／綠 SO2）
+        colors = {"PM2.5": "red", "NOx": "blue", "SO2": "green"}
+        for k, item in enumerate(["PM2.5", "NOx", "SO2"]):
+            if item not in peaks:
+                continue
+            site, hr, val = peaks[item]
+            d_deg, src = wind_at(z, wd_name, ws_name, site, hr)
+            if d_deg is None:
+                continue
+            r = rmax * (1.18 - 0.08 * k)                # 三條線長度錯開，避免重疊
+            th = np.deg2rad(d_deg)
+            axp.plot([th, th], [0, r], color=colors[item], lw=2, zorder=5)
+            axp.plot(th, r, marker="o", ms=8, color=colors[item], zorder=6,
+                     label=f"{item} 最高：{site} {hr}時 {compass(d_deg)}（{d_deg:.0f}°，{src}）")
+        if axp.get_legend_handles_labels()[0]:
+            axp.legend(loc="upper center", bbox_to_anchor=(0.5, -0.04), fontsize=7.5,
+                       frameon=False, title="最高測站於最高值小時的風向", title_fontsize=8)
     else:
         axp.set_title("風向無資料")
 
@@ -245,15 +284,13 @@ def make_chart(long, zone, path):
         top_site(z, "NOx", "ppb"),
         top_site(z, "SO2", "ppb"),
     ])
-
-    axt.text(0, .5, txt, fontsize=10, va="center")
+    axt.text(0, .38, txt, fontsize=10, va="center")     # 稍微下移，讓出圖例空間
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
     fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
     fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.35)
     fig.savefig(path, dpi=100)
     plt.close(fig)
-
 def build():
     long = load_data()
     os.makedirs(OUT, exist_ok=True)
