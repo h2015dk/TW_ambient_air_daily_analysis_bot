@@ -166,75 +166,47 @@ def make_chart(long, zone, path):
                                           ("SO2", "SO2 (ppb)", "tab:green")]):
         ax = fig.add_subplot(gs[i, 0])
         d = z[z["itemengname"] == item]                 # 平均線與範圍帶：一律用全部測站
+        top = find_top(z, item)                         # 日均最高測站
+        extra = HIGHLIGHT.get(zone, {}).get(item)       # 額外指定的測站（例如雲嘉南 SO2 的嘉義）
 
-        hl = HIGHLIGHT.get(zone, {}).get(item)          # 有指定的話，另外疊上該測站
         g = d.groupby("hour")["v"].agg(["mean", "min", "max"]).reindex(range(24))
-        ax.fill_between(g.index, g["min"], g["max"], color=c, alpha=.15,
-                        label="全區範圍" if hl else None)
-        ax.plot(g.index, g["mean"], color=c, marker="o", ms=3,
-                label="全區平均" if hl else None)
+        ax.fill_between(g.index, g["min"], g["max"], color=c, alpha=.15, label="全區範圍")
+        ax.plot(g.index, g["mean"], color=c, marker="o", ms=3, label="全區平均")
 
-        title = None
-        if hl:
-            h = d[d["sitename"] == hl].groupby("hour")["v"].mean().reindex(range(24))
-            if h.notna().any():
-                ax.plot(h.index, h, color="black", marker="s", ms=3.5, lw=1.8, label=hl)
-                ax.set_ylim(top=ax.get_ylim()[1] * 1.15)       # 上方留空間給圖例
-                ax.legend(loc="upper left", fontsize=8, ncol=3, frameon=False)
-                title = f"{hl} 日均 {h.mean():.1f}｜全區日均 {d['v'].mean():.1f}"
+        def station_line(name):
+            return d[d["sitename"] == name].groupby("hour")["v"].mean().reindex(range(24))
+
+        has_line = False
+        if top:
+            h = station_line(top)
+            ax.plot(h.index, h, color="black", marker="s", ms=3.5, lw=1.8,
+                    label=f"最高：{top}（日均 {h.mean():.1f}）")
+            has_line = True
+        if extra and extra != top:                      # 若嘉義剛好就是最高站，不重複畫
+            h2 = station_line(extra)
+            if h2.notna().any():
+                ax.plot(h2.index, h2, color="tab:purple", ls="--", marker="^", ms=3.5, lw=1.6,
+                        label=f"{extra}（日均 {h2.mean():.1f}）")
+                has_line = True
             else:
-                print(f"警告：{zone} 找不到測站「{hl}」的 {item} 資料")
+                print(f"警告：{zone} 找不到測站「{extra}」的 {item} 資料")
+
+        if has_line:
+            ax.set_ylim(top=ax.get_ylim()[1] * 1.3)     # 上方留空間給圖例
+        ax.legend(loc="upper left", fontsize=7.5, ncol=2, frameon=False)
 
         ax.set_ylabel(label)
         ax.set_xlim(0, 23)
         ax.set_xticks(range(0, 24, 3))
         ax.grid(alpha=.3)
-        if title is None:
-            m = d["v"].mean()
-            title = f"日平均 {m:.1f}" if pd.notna(m) else "無資料"
-        ax.set_title(title, loc="right", fontsize=10)
-
-    # 右上：風向玫瑰圖
-    w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
-        index=["siteid", "hour"], columns="itemengname", values="v", aggfunc="mean"
-    ).rename(columns={wd_name: "WIND_DIREC", ws_name: "WIND_SPEED"})
-
-    axp = fig.add_subplot(gs[0:2, 1], projection="polar")
-    axp.set_theta_zero_location("N")
-    axp.set_theta_direction(-1)
-    if "WIND_DIREC" in w and w["WIND_DIREC"].notna().any():
-        w = w.dropna(subset=["WIND_DIREC"])
-        spd = w["WIND_SPEED"].fillna(1) if "WIND_SPEED" in w else pd.Series(1.0, index=w.index)
-        deg = w["WIND_DIREC"].values % 360
-        counts, _ = np.histogram((deg + 11.25) % 360, bins=16, range=(0, 360))
-        axp.bar(np.deg2rad(np.arange(16) * 22.5), counts, width=np.deg2rad(22.5),
-                color="tab:gray", edgecolor="white")
-        axp.set_rlabel_position(202.5)
-        axp.tick_params(axis="y", labelsize=8)
-        rad = np.deg2rad(deg)
-        wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
-        axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
-                      f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
-                      fontsize=10)
-    else:
-        axp.set_title("風向無資料")
-
-    # 右下：PM2.5 / NOx / SO2 日均最高測站
-    axt = fig.add_subplot(gs[2, 1])
-    axt.axis("off")
-    txt = "前一日日均最高測站\n\n" + "\n\n".join([
-        top_site(z, "PM2.5", "μg/m³"),
-        top_site(z, "NOx", "ppb"),
-        top_site(z, "SO2", "ppb"),
-    ])
-    axt.text(0, .5, txt, fontsize=10, va="center")
-
-    fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
-    fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
-    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.35)
-    fig.savefig(path, dpi=100)
-    plt.close(fig)
-
+        m = d["v"].mean()
+        ax.set_title(f"全區日均 {m:.1f}" if pd.notna(m) else "無資料", loc="right", fontsize=10)
+        
+def find_top(z, item, min_hours=18):
+    """回傳某測項日均最高的測站名稱（有效時數不足 min_hours 的不比較），沒有則回傳 None"""
+    s = z[z["itemengname"] == item].groupby("sitename")["v"].agg(mean="mean", n="count")
+    s = s[s["n"] >= min_hours]
+    return None if s.empty else s["mean"].idxmax()
 
 def build():
     long = load_data()
