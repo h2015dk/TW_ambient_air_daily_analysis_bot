@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
-plt.rcParams["font.sans-serif"] = ["Noto Sans CJK TC", "Noto Sans CJK JP", "Microsoft JhengHei"]
+plt.rcParams["font.sans-serif"] = ["Noto Sans CJK TC", "Noto Sans CJK JP", "Microsoft JhengHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
 API = "https://data.moenv.gov.tw/api/v2"
@@ -27,6 +27,14 @@ ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲�
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
 ORIG_DPI = 200                                      # 原圖解析度（點開圖片看到的）；200 dpi ≈ 2000×2150 px
 PREVIEW_DPI = 100                                   # 聊天室預覽圖解析度（LINE 限制預覽圖 ≤ 1 MB）
+SUB = {"PM2.5": "PM₂.₅", "NOx": "NOₓ", "SO2": "SO₂"}   # 顯示用（Unicode 下標字元）
+
+
+def sub(name):
+    """把測項名稱換成下標寫法；只用在顯示的文字，資料比對仍用原本的 PM2.5、NOx、SO2"""
+    return SUB.get(name, name)
+
+
 UNITS = {"PM2.5": "μg/m³", "NOx": "ppb", "SO2": "ppb"}
 MARK_COLOR = {"PM2.5": "red", "NOx": "blue", "SO2": "green"}   # 風向圖上最高測站標記的顏色
 
@@ -113,10 +121,10 @@ def top_site(z, item, unit):
         mean="mean", n="count", peak="max")
     s = s[s["n"] >= 18]
     if s.empty:
-        return f"{item} 最高：有效資料不足"
+        return f"{sub(item)} 最高：有效資料不足"
     idx = s["mean"].idxmax()
     r = s.loc[idx]
-    return (f"{item} 最高：{idx[0]}（{idx[1]}）\n"
+    return (f"{sub(item)} 最高：{idx[0]}（{idx[1]}）\n"
             f"  日均 {r['mean']:.1f} {unit}｜小時最高 {r['peak']:.1f}")
 
 
@@ -196,13 +204,13 @@ def station_footer(z, wd_name):
     used = set().union(*sets.values())
     meta = z[z["sitename"].isin(used)][["sitename", "county"]].drop_duplicates()
     lines = [f"統計測站（共 {len(used)} 站｜" +
-             "｜".join(f"{k} {len(v)} 站" for k, v in sets.items()) + "）"]
+             "｜".join(f"{sub(k)} {len(v)} 站" for k, v in sets.items()) + "）"]
     for county, g in meta.groupby("county"):
         lines += wrap_items(f"{county}：", sorted(g["sitename"]))
     for k, v in sets.items():
         miss = sorted(used - v)
         if miss:
-            lines += wrap_items(f"無{k}資料：", miss)
+            lines += wrap_items(f"無{sub(k)}資料：", miss)
     return lines
 
 
@@ -230,9 +238,9 @@ def make_chart(long, zone, path):
     peaks = {}                                  # {測項: (最高測站, 最高值的小時, 最高值)}
 
     # 左：PM2.5 / NOx / SO2 逐時（全區平均線 + 範圍帶 + 日均最高測站黑線）
-    for i, (item, label, c) in enumerate([("PM2.5", "PM2.5 (μg/m³)", "tab:red"),
-                                          ("NOx", "NOx (ppb)", "tab:blue"),
-                                          ("SO2", "SO2 (ppb)", "tab:green")]):
+    for i, (item, label, c) in enumerate([("PM2.5", f"{sub('PM2.5')} (μg/m³)", "tab:red"),
+                                          ("NOx", f"{sub('NOx')} (ppb)", "tab:blue"),
+                                          ("SO2", f"{sub('SO2')} (ppb)", "tab:green")]):
         ax = fig.add_subplot(gs[i, 0])
         d = z[z["itemengname"] == item]                 # 平均線與範圍帶：一律用全部測站
         top = find_top(z, item)                         # 日均最高測站
@@ -319,7 +327,7 @@ def make_chart(long, zone, path):
             axp.plot([th, th], [0, r], color=MARK_COLOR[item], lw=2, zorder=5)
             spd_txt = f"{d_spd:.1f} m/s" if d_spd is not None else "無風速資料"
             mk, = axp.plot(th, r, marker="o", ms=8, color=MARK_COLOR[item], zorder=6, ls="",
-                           label=(f"{item} {val:.1f} {UNITS[item]}｜{site} {hr}時\n"
+                           label=(f"{sub(item)} {val:.1f} {UNITS[item]}｜{site} {hr}時\n"
                                   f"{compass(d_deg)} {d_deg:.0f}°｜風速 {spd_txt}｜{src}"))
             handles.append(mk)
     else:
