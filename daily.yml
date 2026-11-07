@@ -1,0 +1,46 @@
+name: Daily air quality report
+
+on:
+  schedule:
+    - cron: "0 2 * * *"      # UTC 02:00 = 台北 10:00
+  workflow_dispatch:          # 允許手動觸發，測試用
+
+permissions:
+  contents: write             # 需要把圖片 commit 回 repo
+
+concurrency: aq-report
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CJK font
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - run: pip install -r requirements.txt
+
+      - name: Build charts
+        env:
+          MOENV_API_KEY: ${{ secrets.MOENV_API_KEY }}
+        run: python aqi_report.py build
+
+      - name: Commit images
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/images
+          git commit -m "AQ charts $(TZ=Asia/Taipei date +%F -d yesterday)" || echo "nothing to commit"
+          git push
+
+      - name: Send to LINE
+        env:
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
+        run: python aqi_report.py send
