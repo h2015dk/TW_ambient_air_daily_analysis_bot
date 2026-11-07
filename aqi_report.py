@@ -20,6 +20,7 @@ PREV = (NOW - timedelta(days=2)).strftime("%Y-%m-%d")
 OUT = f"docs/images/{DAY}"
 
 ITEMS = ["PM2.5", "NOx", "SO2", "WIND_DIREC", "WIND_SPEED", "WD_HR", "WS_HR"]
+HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
