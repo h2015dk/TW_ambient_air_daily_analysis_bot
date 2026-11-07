@@ -90,7 +90,12 @@ def load_data():
     long["hour"] = long["h"].str[-2:].astype(int)
     long["v"] = pd.to_numeric(long["v"], errors="coerce")   # NR、# 等註記碼 → NaN
     long["siteid"] = long["siteid"].astype(str).str.strip()
-    return long.merge(st[["siteid", "areaname", "county"]], on="siteid", how="left")
+    merged = long.merge(st[["siteid", "areaname", "county"]], on="siteid", how="left")
+    miss = merged["areaname"].isna().mean()
+    print(f"測站對應失敗比例: {miss:.0%}")
+    print("aqx_p_13 的 siteid 範例:", sorted(long["siteid"].unique())[:5])
+    print("aqx_p_07 的 siteid 範例:", sorted(st["siteid"].unique())[:5])
+    return merged
 
 
 def make_chart(long, zone, path):
@@ -159,12 +164,16 @@ def make_chart(long, zone, path):
 def build():
     long = load_data()
     os.makedirs(OUT, exist_ok=True)
+    made = 0
     for zone, fn in ZONE_FILE.items():
         if long[long["areaname"] == zone].empty:
             print(f"警告：{zone} 無資料（請確認 areaname 寫法）")
             continue
         make_chart(long, zone, f"{OUT}/{fn}.png")
-    # 只保留最近 7 天，避免 repo 越長越大
+        made += 1
+    print(f"共產出 {made} 張圖")
+    if made == 0:
+        sys.exit("沒有產出任何圖，請檢查上面的 areaname 與 siteid 對應")
     cutoff = (NOW - timedelta(days=8)).strftime("%Y-%m-%d")
     for d in os.listdir("docs/images"):
         if d < cutoff:
