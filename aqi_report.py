@@ -182,20 +182,27 @@ def wait_public(url, tries=6):
 def send():
     base = (f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/"
             f"{os.environ.get('GITHUB_REF_NAME', 'main')}/docs/images/{DAY}")
+    print("要發送的日期:", DAY, "| 資料夾存在:", os.path.isdir(OUT),
+          "| 檔案:", os.listdir(OUT) if os.path.isdir(OUT) else [])
+    gid = os.environ.get("LINE_GROUP_ID", "").strip()
+    print("群組 ID 開頭:", gid[:1] or "（空）", "| 長度:", len(gid))
     for grp in SEND_GROUPS:
         msgs = []
         for zone in grp:
             fn = ZONE_FILE[zone]
             if not os.path.exists(f"{OUT}/{fn}.png"):
+                print(f"略過 {zone}：找不到 {OUT}/{fn}.png")
                 continue
             url = f"{base}/{fn}.png"
             wait_public(url)
             msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": url})
         if not msgs:
+            print("這組沒有圖片，不發送:", grp)
             continue
         r = requests.post("https://api.line.me/v2/bot/message/push",
-                          headers={"Authorization": f"Bearer {os.environ['LINE_CHANNEL_TOKEN']}"},
-                          json={"to": os.environ["LINE_GROUP_ID"], "messages": msgs}, timeout=30)
+                          headers={"Authorization": f"Bearer {os.environ['LINE_CHANNEL_TOKEN'].strip()}"},
+                          json={"to": gid, "messages": msgs}, timeout=30)
+        print(grp, "→ LINE 回應:", r.status_code, r.text[:200])
         r.raise_for_status()
         time.sleep(1)
 
