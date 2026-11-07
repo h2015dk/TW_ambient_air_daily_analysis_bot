@@ -164,17 +164,34 @@ def make_chart(long, zone, path):
                                           ("NOx", "NOx (ppb)", "tab:blue"),
                                           ("SO2", "SO2 (ppb)", "tab:green")]):
         ax = fig.add_subplot(gs[i, 0])
-        d = z[z["itemengname"] == item]
+        d = z[z["itemengname"] == item]                 # 平均線與範圍帶：一律用全部測站
+
+        hl = HIGHLIGHT.get(zone, {}).get(item)          # 有指定的話，另外疊上該測站
         g = d.groupby("hour")["v"].agg(["mean", "min", "max"]).reindex(range(24))
-        ax.fill_between(g.index, g["min"], g["max"], color=c, alpha=.15)
-        ax.plot(g.index, g["mean"], color=c, marker="o", ms=3)
+        ax.fill_between(g.index, g["min"], g["max"], color=c, alpha=.15,
+                        label="全區範圍" if hl else None)
+        ax.plot(g.index, g["mean"], color=c, marker="o", ms=3,
+                label="全區平均" if hl else None)
+
+        title = None
+        if hl:
+            h = d[d["sitename"] == hl].groupby("hour")["v"].mean().reindex(range(24))
+            if h.notna().any():
+                ax.plot(h.index, h, color="black", marker="s", ms=3.5, lw=1.8, label=hl)
+                ax.set_ylim(top=ax.get_ylim()[1] * 1.15)       # 上方留空間給圖例
+                ax.legend(loc="upper left", fontsize=8, ncol=3, frameon=False)
+                title = f"{hl} 日均 {h.mean():.1f}｜全區日均 {d['v'].mean():.1f}"
+            else:
+                print(f"警告：{zone} 找不到測站「{hl}」的 {item} 資料")
+
         ax.set_ylabel(label)
         ax.set_xlim(0, 23)
         ax.set_xticks(range(0, 24, 3))
         ax.grid(alpha=.3)
-        m = d["v"].mean()
-        ax.set_title(f"日平均 {m:.1f}" if pd.notna(m) else "無資料", loc="right", fontsize=10)
-    ax.set_xlabel("時")
+        if title is None:
+            m = d["v"].mean()
+            title = f"日平均 {m:.1f}" if pd.notna(m) else "無資料"
+        ax.set_title(title, loc="right", fontsize=10)
 
     # 右上：風向玫瑰圖
     w = z[z["itemengname"].isin([wd_name, ws_name])].pivot_table(
