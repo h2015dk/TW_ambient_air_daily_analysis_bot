@@ -34,20 +34,33 @@ def compass(deg):                                   # 氣象風向＝風「吹�
 
 def fetch(dataset, filters=None):
     rows, offset = [], 0
+    key = os.environ.get("MOENV_API_KEY", "").strip()
+    if not key:
+        sys.exit("MOENV_API_KEY 是空的，請檢查 GitHub Secret 名稱與內容")
     while True:
-        p = {"api_key": os.environ["MOENV_API_KEY"], "format": "json", "limit": 1000, "offset": offset}
+        p = {"api_key": key, "format": "json", "limit": 1000, "offset": offset}
         if filters:
             p["filters"] = filters
         for attempt in range(3):
             try:
-                r = requests.get(f"{API}/{dataset}", params=p, timeout=60)
+                r = requests.get(f"{API}/{dataset}", params=p, timeout=60,
+                                 headers={"User-Agent": "Mozilla/5.0"})
                 r.raise_for_status()
+                data = r.json()
                 break
-            except requests.RequestException:
+            except (requests.RequestException, ValueError) as e:
+                print(f"[{dataset}] 第 {attempt + 1} 次失敗: {e}")
+                try:
+                    print("狀態碼:", r.status_code, "| 回應開頭:", r.text[:300].replace(key, "***"))
+                except NameError:
+                    pass
                 if attempt == 2:
-                    raise
+                    sys.exit(f"{dataset} 抓取失敗")
                 time.sleep(5)
-        recs = r.json().get("records", [])
+        # 回傳可能是 {"records": [...]} 或直接是 [...]
+        recs = data if isinstance(data, list) else data.get("records", [])
+        if offset == 0:
+            print(f"[{dataset}] 回傳型態: {type(data).__name__}，第一筆: {str(recs[0])[:300] if recs else '（空）'}")
         rows += recs
         if len(recs) < 1000:
             break
