@@ -10,7 +10,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
-plt.rcParams["font.sans-serif"] = ["Noto Sans CJK TC", "Noto Sans CJK JP", "Microsoft JhengHei", "DejaVu Sans"]
+from matplotlib import font_manager as fm
+# 字型備援順序：中文字型 → DejaVu Sans（內建於 matplotlib，提供中文字型沒有的下標字元 ₂ ₅ ₓ）。
+# 必須直接把字型名稱寫進 font.family；放在 font.sans-serif 裡的備援字型不會生效。
+_installed = {f.name for f in fm.fontManager.ttflist}
+_CJK = [n for n in ("Noto Sans CJK TC", "Noto Sans CJK JP", "Microsoft JhengHei", "PingFang TC") if n in _installed]
+plt.rcParams["font.family"] = _CJK + ["DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
 API = "https://data.moenv.gov.tw/api/v2"
@@ -25,6 +30,7 @@ HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}             # 額外指定疊圖比
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
 SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
+LINESPACING = 1.3                                   # 多行文字行距（中文字佔滿整行高，1.2 以下兩行會太貼）
 ORIG_DPI = 200                                      # 原圖解析度（點開圖片看到的）；200 dpi ≈ 2000×2150 px
 PREVIEW_DPI = 100                                   # 聊天室預覽圖解析度（LINE 限制預覽圖 ≤ 1 MB）
 SUB = {"PM2.5": "PM₂.₅", "NOx": "NOₓ", "SO2": "SO₂"}   # 顯示用（Unicode 下標字元）
@@ -230,7 +236,7 @@ def make_chart(long, zone, path):
     ws_name = "WS_HR" if wd_name == "WD_HR" else "WIND_SPEED"
 
     foot = station_footer(z, wd_name)
-    foot_h = 0.15 * len(foot) + 0.12            # 單行間距(1.2)，每行約 0.15 吋，再加一點緩衝
+    foot_h = 0.16 * len(foot) + 0.12            # 每行約 0.16 吋，再加一點緩衝
     H = 10 + foot_h
     fig = plt.figure(figsize=(10, H), dpi=100)
     gs = fig.add_gridspec(3, 2, width_ratios=[2, 1.3])
@@ -311,7 +317,7 @@ def make_chart(long, zone, path):
         wd = (np.rad2deg(np.arctan2((spd * np.sin(rad)).mean(), (spd * np.cos(rad)).mean())) + 360) % 360
         axp.set_title(f"風向分布（徑向：次數，測站×小時）\n"
                       f"合成風向：{compass(wd)}（{wd:.0f}°）　平均風速 {spd.mean():.1f} m/s",
-                      fontsize=10, pad=18, linespacing=1.2)
+                      fontsize=10, pad=18, linespacing=LINESPACING)
 
         # 各污染物「最高測站、最高值那一小時」的風向標記，並註明該小時風速
         for k, item in enumerate(["PM2.5", "NOx", "SO2"]):
@@ -338,11 +344,11 @@ def make_chart(long, zone, path):
         top_site(z, "NOx", "ppb"),
         top_site(z, "SO2", "ppb"),
     ])
-    axt.text(0, 0.0, txt, fontsize=9, va="bottom", ha="left", transform=axt.transAxes, linespacing=1.2)
+    axt.text(0, 0.0, txt, fontsize=9, va="bottom", ha="left", transform=axt.transAxes, linespacing=LINESPACING)
 
     fig.suptitle(f"{DAY}  {zone}空品區 空氣品質日報", fontsize=16)
     fig.tight_layout(rect=[0, foot_h / H + 0.005, 1, 1])      # 底部留空間給測站名單
-    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=1.2)
+    fig.text(0.02, 0.004, "\n".join(foot), fontsize=8, va="bottom", ha="left", linespacing=LINESPACING)
 
     # 風向、風速說明：放在風向圖正下方，上緣距離風向圖最低的文字（180° 標籤）12 px
     if handles:
@@ -356,7 +362,7 @@ def make_chart(long, zone, path):
                          title="最高濃度測站於最高值小時的風向、風速", title_fontsize=8,
                          alignment="left")
         for t in leg.get_texts():
-            t.set_linespacing(1.2)
+            t.set_linespacing(LINESPACING + 0.1)
     save_png(fig, path, ORIG_DPI)                                  # 原圖（高解析度）
     save_png(fig, path.replace(".png", "_preview.png"), PREVIEW_DPI)   # 聊天室預覽圖
     plt.close(fig)
