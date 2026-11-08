@@ -1,12 +1,12 @@
 name: Daily air quality report
 
 on:
-  schedule:
-    - cron: "23 8 * * *"      # UTC 08:23 = 台北 16:23
-  workflow_dispatch:          # 允許手動觸發，測試用
+  repository_dispatch:
+    types: [trigger-air-report]  # 接收外部 cron-job.org 的觸發訊號
+  workflow_dispatch:            # 保留手動測試按鈕
 
 permissions:
-  contents: write             # 需要把圖片 commit 回 repo
+  contents: write
 
 concurrency: aq-report
 
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
