@@ -2,7 +2,7 @@ name: Daily air quality report
 
 on:
   schedule:
-    - cron: "22 4 * * *"      # UTC 04:22 = 台北 12:22
+    - cron: "22 6 * * *"      # UTC 06:22 = 台北 14:22
   workflow_dispatch:          # 允許手動觸發，測試用
 
 permissions:
