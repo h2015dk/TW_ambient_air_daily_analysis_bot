@@ -29,7 +29,6 @@ ITEMS = ["PM2.5", "NOx", "SO2", "WIND_DIREC", "WIND_SPEED", "WD_HR", "WS_HR"]
 HIGHLIGHT = {"雲嘉南": {"SO2": "嘉義"}}             # 額外指定疊圖比較的測站：{空品區: {測項: 測站}}
 ZONE_FILE = {"北部": "north", "竹苗": "zhumiao", "中部": "central", "雲嘉南": "yunjianan",
              "高屏": "gaoping", "宜蘭": "yilan", "花東": "huadong"}
-SEND_GROUPS = [["北部", "竹苗"], ["中部", "雲嘉南"], ["高屏"], ["宜蘭", "花東"]]   # 分 4 次發送
 LINESPACING = 1.3                                   # 多行文字行距（中文字佔滿整行高，1.2 以下兩行會太貼）
 ORIG_DPI = 200                                      # 原圖解析度（點開圖片看到的）；200 dpi ≈ 2000×2150 px
 PREVIEW_DPI = 100                                   # 聊天室預覽圖解析度（LINE 限制預覽圖 ≤ 1 MB）
@@ -412,6 +411,32 @@ def wait_public(url, local_path, tries=8):
     return False
 
 
+def line_quota(token):
+    """印出本月 LINE 訊息用量（僅供 log 參考，失敗不影響發送）。"""
+    h = {"Authorization": f"Bearer {token}"}
+    try:
+        q = requests.get("https://api.line.me/v2/bot/message/quota", headers=h, timeout=15).json()
+        c = requests.get("https://api.line.me/v2/bot/message/quota/consumption", headers=h, timeout=15).json()
+        print(f"LINE 本月用量: {c.get('totalUsage')} / {q.get('value', '無上限')}（{q.get('type')}）")
+    except Exception as e:
+        print("查詢 LINE 用量失敗:", e)
+
+
+def bubble(zone, url, purl, ppath):
+    w, h = Image.open(ppath).size
+    return {
+        "type": "bubble", "size": "giga",
+        "header": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
+            {"type": "text", "text": f"{zone}空品區｜{DAY}", "weight": "bold", "size": "md"}]},
+        "hero": {"type": "image", "url": purl, "size": "full",
+                 "aspectRatio": f"{w}:{h}", "aspectMode": "fit",
+                 "action": {"type": "uri", "label": "看原圖", "uri": url}},
+        "footer": {"type": "box", "layout": "vertical", "paddingAll": "6px", "contents": [
+            {"type": "button", "style": "link", "height": "sm",
+             "action": {"type": "uri", "label": "點此看高解析原圖", "uri": url}}]},
+    }
+
+
 def send():
     sha = commit_sha()
     base = (os.environ.get("IMAGE_BASE_URL")
@@ -419,35 +444,33 @@ def send():
     print("要發送的日期:", DAY, "| commit:", sha[:10], "| 資料夾存在:", os.path.isdir(OUT),
           "| 檔案:", os.listdir(OUT) if os.path.isdir(OUT) else [])
     gid = os.environ.get("LINE_GROUP_ID", "").strip()
+    token = os.environ["LINE_CHANNEL_TOKEN"].strip()
     print("群組 ID 開頭:", gid[:1] or "（空）", "| 長度:", len(gid))
-    for grp in SEND_GROUPS:
-        msgs = []
-        for zone in grp:
-            fn = ZONE_FILE[zone]
-            path, ppath = f"{OUT}/{fn}.png", f"{OUT}/{fn}_preview.png"
-            if not (os.path.exists(path) and os.path.exists(ppath)):
-                print(f"略過 {zone}：找不到 {path} 或預覽圖")
-                continue
-            size, psize = os.path.getsize(path), os.path.getsize(ppath)
-            if size > 10_000_000:                   # LINE 原圖上限 10 MB
-                print(f"警告：{zone} 原圖 {size / 1e6:.1f} MB，超過 LINE 10 MB 上限")
-            if psize > 1_000_000:                   # LINE 預覽圖上限 1 MB
-                print(f"警告：{zone} 預覽圖 {psize / 1e6:.2f} MB，超過 LINE 1 MB 上限")
-            url, purl = f"{base}/{fn}.png", f"{base}/{fn}_preview.png"
-            wait_public(url, path)
-            wait_public(purl, ppath)
-            print(f"  {zone}: 原圖 {size / 1024:.0f} KB｜預覽 {psize / 1024:.0f} KB｜{url}")
-            msgs.append({"type": "image", "originalContentUrl": url, "previewImageUrl": purl})
-        if not msgs:
-            print("這組沒有圖片，不發送:", grp)
+    line_quota(token)
+    bubbles = []
+    for zone, fn in ZONE_FILE.items():               # 7 區合成一則 carousel（上限 12 頁）
+        path, ppath = f"{OUT}/{fn}.png", f"{OUT}/{fn}_preview.png"
+        if not (os.path.exists(path) and os.path.exists(ppath)):
+            print(f"略過 {zone}：找不到 {path} 或預覽圖")
             continue
-        r = requests.post("https://api.line.me/v2/bot/message/push",
-                          headers={"Authorization": f"Bearer {os.environ['LINE_CHANNEL_TOKEN'].strip()}"},
-                          json={"to": gid, "messages": msgs}, timeout=30)
-        print(grp, "→ LINE 回應:", r.status_code, r.text[:200])
-        r.raise_for_status()
-        time.sleep(1)
-
+        size, psize = os.path.getsize(path), os.path.getsize(ppath)
+        if psize > 1_000_000:                       # 預覽圖保持 ≤ 1 MB，聊天室載入較快
+            print(f"警告：{zone} 預覽圖 {psize / 1e6:.2f} MB，超過 1 MB")
+        url, purl = f"{base}/{fn}.png", f"{base}/{fn}_preview.png"
+        wait_public(url, path)
+        wait_public(purl, ppath)
+        print(f"  {zone}: 原圖 {size / 1024:.0f} KB｜預覽 {psize / 1024:.0f} KB｜{url}")
+        bubbles.append(bubble(zone, url, purl, ppath))
+    if not bubbles:
+        print("沒有任何圖片，不發送")
+        return
+    msg = {"type": "flex", "altText": f"{DAY} 各空品區空氣品質日報（{len(bubbles)} 區，左右滑動查看）",
+           "contents": {"type": "carousel", "contents": bubbles}}
+    r = requests.post("https://api.line.me/v2/bot/message/push",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json={"to": gid, "messages": [msg]}, timeout=30)
+    print("LINE 回應:", r.status_code, r.text[:300])
+    r.raise_for_status()
 
 if __name__ == "__main__":
     {"build": build, "send": send}[sys.argv[1]]()
